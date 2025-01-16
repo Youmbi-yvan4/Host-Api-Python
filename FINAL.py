@@ -1,11 +1,9 @@
 from flask import Flask, request, jsonify
-from werkzeug.utils import secure_filename
-from werkzeug.exceptions import HTTPException
 from flask_cors import CORS
 import os
 import logging
 from docx import Document
-import fitz  # PyMuPDF
+import pdfplumber
 import pandas as pd
 import string
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -19,6 +17,7 @@ logging.basicConfig(level=logging.DEBUG)
 UPLOAD_FOLDER = 'uploads'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
+# Ensure upload folder exists
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
@@ -36,8 +35,7 @@ def upload_files():
         
         file_urls = []
         for file in files:
-            filename = secure_filename(file.filename)
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
             file.save(file_path)
             file_urls.append(file_path)
         
@@ -56,6 +54,7 @@ def get_similarities():
             app.logger.error("Not enough file paths to compare")
             return jsonify({"error": "Not enough file paths to compare."}), 400
         
+        # Extract texts from files
         documents = []
         for file_path in file_paths:
             text = extract_text_from_file(file_path)
@@ -66,6 +65,11 @@ def get_similarities():
             app.logger.error("Not enough extracted texts to compare")
             return jsonify({"error": "Not enough extracted texts to compare."}), 400
 
+        # Check if documents are not empty or contain only stop words
+        if any(is_empty_or_stopwords(doc) for doc in documents):
+            app.logger.error("One or more documents are empty or contain only stop words")
+            return jsonify({"error": "One or more documents are empty or contain only stop words"}), 400
+
         similarity_results = calculate_and_display_similarities(documents)
         return jsonify(similarity_results), 200
     except Exception as e:
@@ -73,11 +77,36 @@ def get_similarities():
         app.logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
+@app.route('/inspiration', methods=['POST'])
+def get_inspiration():
+    data = request.json
+    text1 = data.get('text1')
+    text2 = data.get('text2')
+    file_paths = data.get('file_paths', [])
+    
+    # Extract texts from files if provided
+    for file_path in file_paths:
+        extracted_text = extract_text_from_file(file_path)
+        if extracted_text:
+            if not text1:
+                text1 = extracted_text
+            elif not text2:
+                text2 = extracted_text
+            else:
+                # Combine extracted texts if both text1 and text2 are already provided
+                text2 += "\n" + extracted_text
+    
+    if not text1 or not text2:
+        return jsonify({"error": "Both text1 and text2 are required either directly or via file paths."}), 400
+    
+    inspiration_percentage = measure_inspiration(text1, text2)
+    return jsonify({"inspiration_percentage": inspiration_percentage}), 200
+
 def extract_text_from_file(file_path):
     file_extension = os.path.splitext(file_path)[1].lower()
     
     if file_extension == ".pdf":
-        return extract_text_pymupdf(file_path)
+        return extract_text_pdfplumber(file_path)
     elif file_extension == ".docx":
         return extract_text_docx(file_path)
     elif file_extension in [".xls", ".xlsx"]:
@@ -85,35 +114,35 @@ def extract_text_from_file(file_path):
     elif file_extension == ".txt":
         return extract_text_txt(file_path)
     else:
-        app.logger.error(f"Unsupported file type: {file_extension}")
+        print(f"Unsupported file type: {file_extension}")
         return None
 
-def extract_text_pymupdf(file_path):
+def extract_text_pdfplumber(file_path):
     try:
-        with fitz.open(file_path) as pdf:
-            text = ""
-            for page in pdf:
-                text += page.get_text()
+        with pdfplumber.open(file_path) as pdf:
+            text = ''
+            for page in pdf.pages:
+                text += page.extract_text()
         return text
     except Exception as e:
-        app.logger.error(f"Error extracting text from PDF: {e}")
+        print(f"Error extracting PDF text: {e}")
         return None
 
 def extract_text_docx(file_path):
     try:
         doc = Document(file_path)
-        text = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
+        text = '\n'.join([paragraph.text for paragraph in doc.paragraphs])
         return text
     except Exception as e:
-        app.logger.error(f"Error extracting DOCX text: {e}")
+        print(f"Error extracting DOCX text: {e}")
         return None
 
 def extract_text_with_pandas(file_path):
     try:
-        data = pd.read_excel(file_path)
-        return data.to_string(index=False)
+        data = pd.read_excel(file_path)  # Reads the first sheet by default
+        return data.to_string(index=False)  # Convert the DataFrame to string for printing
     except Exception as e:
-        app.logger.error(f"Error extracting Excel data: {e}")
+        print(f"Error extracting Excel data: {e}")
         return None
 
 def extract_text_txt(file_path):
@@ -121,20 +150,50 @@ def extract_text_txt(file_path):
         with open(file_path, 'r', encoding='utf-8') as file:
             return file.read()
     except Exception as e:
-        app.logger.error(f"Error extracting text from TXT file: {e}")
+        print(f"Error extracting text from TXT file: {e}")
         return None
 
+def is_empty_or_stopwords(text):
+    """Check if text is empty or contains only stop words."""
+    words = text.split()
+    if not words:
+        return True
+    non_stop_words = [word for word in words if word not in string.punctuation]
+    return len(non_stop_words) == 0
+
 def calculate_and_display_similarities(documents):
+    def get_range(percentage):
+        if percentage >= 90:
+            return "90-100%"
+        elif percentage >= 80:
+            return "80-90%"
+        elif percentage >= 70:
+            return "70-80%"
+        elif percentage >= 60:
+            return "60-70%"
+        elif percentage >= 50:
+            return "50-60%"
+        elif percentage >= 40:
+            return "40-50%"
+        elif percentage >= 30:
+            return "30-40%"
+        elif percentage >= 20:
+            return "20-30%"
+        elif percentage >= 10:
+            return "10-20%"
+        else:
+            return "0-10%"
+
     similarities = []
     for i in range(len(documents)):
         for j in range(i + 1, len(documents)):
             similarity = structural_similarity(documents[i], documents[j])
             range_label = get_range(similarity)
-            similarities.append({
-                "comparison": f"Document {i + 1} and Document {j + 1}",
-                "similarity": similarity,
-                "range": range_label
-            })
+            similarities.append([
+                f"Document {i + 1} and Document {j + 1}",
+                similarity,
+                range_label
+            ])
     return similarities
 
 def preprocess_text(text):
@@ -144,8 +203,9 @@ def segment_text(text):
     return text.split('\n')
 
 def lcs(X, Y):
-    m, n = len(X), len(Y)
-    L = [[0] * (n + 1) for _ in range(m + 1)]
+    m = len(X)
+    n = len(Y)
+    L = [[None]*(n+1) for i in range(m+1)]
 
     for i in range(m + 1):
         for j in range(n + 1):
@@ -168,13 +228,18 @@ def calculate_similarity(text1, text2):
     lcs_length = lcs(words1, words2)
     max_length = max(len(words1), len(words2))
 
-    return (lcs_length / max_length) * 100 if max_length > 0 else 0
+    if max_length == 0:
+        return 0
+
+    similarity_percentage = (lcs_length / max_length) * 100
+    return similarity_percentage
 
 def cosine_similarity_percentage(text1, text2):
-    vectorizer = TfidfVectorizer(stop_words='english')
+    vectorizer = TfidfVectorizer()
     tfidf_matrix = vectorizer.fit_transform([text1, text2])
     cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])
-    return cosine_sim[0][0] * 100
+    similarity_percentage = cosine_sim[0][0] * 100
+    return similarity_percentage
 
 def structural_similarity(text1, text2):
     text1 = preprocess_text(text1)
@@ -196,25 +261,40 @@ def structural_similarity(text1, text2):
             best_match_similarity = max(best_match_similarity, lcs_sim, cosine_sim)
         matched_similarities.append(best_match_similarity)
 
-    return sum(matched_similarities) / len(matched_similarities) if matched_similarities else 0
+    if not matched_similarities:
+        return 0
 
-def get_range(percentage):
-    ranges = [
-        (90, "90-100%"),
-        (80, "80-90%"),
-        (70, "70-80%"),
-        (60, "60-70%"),
-        (50, "50-60%"),
-        (40, "40-50%"),
-        (30, "30-40%"),
-        (20, "20-30%"),
-        (10, "10-20%"),
-        (0, "0-10%")
-    ]
-    for threshold, label in ranges:
-        if percentage >= threshold:
-            return label
-    return "0-10%"
+    total_similarity_percentage = sum(matched_similarities) / len(matched_similarities)
+    return total_similarity_percentage
+
+def detect_inspirations(text1, text2):
+    inspirations = []
+    paragraphs1 = segment_text(text1)
+    paragraphs2 = segment_text(text2)
+
+    for para2 in paragraphs2:
+        best_match_similarity = 0
+        for para1 in paragraphs1:
+            lcs_sim = calculate_similarity(para1, para2)
+            cosine_sim = cosine_similarity_percentage(para1, para2)
+            max_similarity = max(lcs_sim, cosine_sim)
+
+            if max_similarity > 0:
+                best_match_similarity = max(best_match_similarity, max_similarity)
+        inspirations.append((para2, best_match_similarity))
+    return inspirations
+
+def calculate_total_inspiration(inspirations, total_paragraphs):
+    total_similarity_score = sum(similarity for _, similarity in inspirations)
+    if total_paragraphs == 0:
+        return 0
+    total_inspiration_percentage = total_similarity_score / total_paragraphs
+    return total_inspiration_percentage
+
+def measure_inspiration(text1, text2):
+    inspirations = detect_inspirations(text1, text2)
+    total_inspiration_percentage = calculate_total_inspiration(inspirations, len(inspirations))
+    return total_inspiration_percentage
 
 if __name__ == '__main__':
     app.run(debug=True)
