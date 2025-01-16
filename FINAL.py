@@ -8,6 +8,7 @@ import pandas as pd
 import string
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import traceback
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -64,10 +65,17 @@ def get_similarities():
             app.logger.error("Not enough extracted texts to compare")
             return jsonify({"error": "Not enough extracted texts to compare."}), 400
 
+        # Check if documents are not empty or contain only stop words
+        for doc in documents:
+            if not doc.strip():
+                app.logger.error("One or more documents are empty or contain only stop words")
+                return jsonify({"error": "One or more documents are empty or contain only stop words"}), 400
+
         similarity_results = calculate_and_display_similarities(documents)
         return jsonify(similarity_results), 200
     except Exception as e:
         app.logger.error(f"Exception occurred: {e}")
+        app.logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 @app.route('/inspiration', methods=['POST'])
@@ -191,7 +199,7 @@ def lcs(X, Y):
     m = len(X)
     n = len(Y)
     L = [[None]*(n+1) for i in range(m+1)]
-    
+
     for i in range(m + 1):
         for j in range(n + 1):
             if i == 0 or j == 0:
@@ -200,22 +208,22 @@ def lcs(X, Y):
                 L[i][j] = L[i - 1][j - 1] + 1
             else:
                 L[i][j] = max(L[i - 1][j], L[i][j - 1])
-    
+
     return L[m][n]
 
 def calculate_similarity(text1, text2):
     words1 = text1.split()
     words2 = text2.split()
-    
+
     if not words1 or not words2:
         return 0
-    
+
     lcs_length = lcs(words1, words2)
     max_length = max(len(words1), len(words2))
-    
+
     if max_length == 0:
         return 0
-    
+
     similarity_percentage = (lcs_length / max_length) * 100
     return similarity_percentage
 
@@ -229,10 +237,10 @@ def cosine_similarity_percentage(text1, text2):
 def structural_similarity(text1, text2):
     text1 = preprocess_text(text1)
     text2 = preprocess_text(text2)
-    
+
     paragraphs1 = segment_text(text1)
     paragraphs2 = segment_text(text2)
-    
+
     matched_similarities = []
     for para1 in paragraphs1:
         if not para1.strip():
@@ -245,24 +253,25 @@ def structural_similarity(text1, text2):
             cosine_sim = cosine_similarity_percentage(para1, para2)
             best_match_similarity = max(best_match_similarity, lcs_sim, cosine_sim)
         matched_similarities.append(best_match_similarity)
-    
+
     if not matched_similarities:
         return 0
-    
+
     total_similarity_percentage = sum(matched_similarities) / len(matched_similarities)
     return total_similarity_percentage
+
 def detect_inspirations(text1, text2):
     inspirations = []
     paragraphs1 = segment_text(text1)
     paragraphs2 = segment_text(text2)
-    
+
     for para2 in paragraphs2:  # Iterate through paragraphs in text2
         best_match_similarity = 0
         for para1 in paragraphs1:  # Compare with paragraphs in text1
             lcs_sim = calculate_similarity(para1, para2)
             cosine_sim = cosine_similarity_percentage(para1, para2)
             max_similarity = max(lcs_sim, cosine_sim)
-            
+
             if max_similarity > 0:  # Consider all similarities
                 best_match_similarity = max(best_match_similarity, max_similarity)
         inspirations.append((para2, best_match_similarity))
