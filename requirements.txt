@@ -1,3 +1,4 @@
+fitz  # PyMuPDF
 Flask==3.1.0
 Flask-Cors==5.0.0
 python-docx==1.1.2
