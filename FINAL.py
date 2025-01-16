@@ -11,7 +11,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import traceback
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app, resources={r"/*": {"origins": "https://plagiarismhecker.vercel.app"}})
 logging.basicConfig(level=logging.DEBUG)
 
 UPLOAD_FOLDER = 'uploads'
