@@ -3,8 +3,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
 import string
-import fitz  # PyMuPDF
 from docx import Document
+import pdfplumber
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -98,7 +98,7 @@ def extract_text_from_file(file_path):
     file_extension = os.path.splitext(file_path)[1].lower()
     
     if file_extension == ".pdf":
-        return extract_text_pymupdf(file_path)
+        return extract_text_pdfplumber(file_path)
     elif file_extension == ".docx":
         return extract_text_docx(file_path)
     elif file_extension in [".xls", ".xlsx"]:
@@ -109,15 +109,15 @@ def extract_text_from_file(file_path):
         print(f"Unsupported file type: {file_extension}")
         return None
 
-def extract_text_pymupdf(file_path):
+def extract_text_pdfplumber(file_path):
     try:
-        with fitz.open(file_path) as pdf:
+        with pdfplumber.open(file_path) as pdf:
             text = ''
-            for page in pdf:
-                text += page.get_text()
+            for page in pdf.pages:
+                text += page.extract_text()
         return text
     except Exception as e:
-        print(f"Error extracting PDF text with PyMuPDF: {e}")
+        print(f"Error extracting PDF text: {e}")
         return None
 
 def extract_text_docx(file_path):
