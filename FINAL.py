@@ -1,14 +1,12 @@
+import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os
 import logging
-from docx import Document
-import pdfplumber
-import pandas as pd
 import string
+import fitz  # PyMuPDF
+from docx import Document
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import traceback
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -64,17 +62,11 @@ def get_similarities():
         if len(documents) < 2:
             app.logger.error("Not enough extracted texts to compare")
             return jsonify({"error": "Not enough extracted texts to compare."}), 400
-
-        # Check if documents are not empty or contain only stop words
-        if any(is_empty_or_stopwords(doc) for doc in documents):
-            app.logger.error("One or more documents are empty or contain only stop words")
-            return jsonify({"error": "One or more documents are empty or contain only stop words"}), 400
-
+        
         similarity_results = calculate_and_display_similarities(documents)
         return jsonify(similarity_results), 200
     except Exception as e:
         app.logger.error(f"Exception occurred: {e}")
-        app.logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 @app.route('/inspiration', methods=['POST'])
@@ -106,7 +98,7 @@ def extract_text_from_file(file_path):
     file_extension = os.path.splitext(file_path)[1].lower()
     
     if file_extension == ".pdf":
-        return extract_text_pdfplumber(file_path)
+        return extract_text_pymupdf(file_path)
     elif file_extension == ".docx":
         return extract_text_docx(file_path)
     elif file_extension in [".xls", ".xlsx"]:
@@ -117,15 +109,15 @@ def extract_text_from_file(file_path):
         print(f"Unsupported file type: {file_extension}")
         return None
 
-def extract_text_pdfplumber(file_path):
+def extract_text_pymupdf(file_path):
     try:
-        with pdfplumber.open(file_path) as pdf:
+        with fitz.open(file_path) as pdf:
             text = ''
-            for page in pdf.pages:
-                text += page.extract_text()
+            for page in pdf:
+                text += page.get_text()
         return text
     except Exception as e:
-        print(f"Error extracting PDF text: {e}")
+        print(f"Error extracting PDF text with PyMuPDF: {e}")
         return None
 
 def extract_text_docx(file_path):
@@ -139,8 +131,9 @@ def extract_text_docx(file_path):
 
 def extract_text_with_pandas(file_path):
     try:
-        data = pd.read_excel(file_path)  # Reads the first sheet by default
-        return data.to_string(index=False)  # Convert the DataFrame to string for printing
+        import pandas as pd
+        data = pd.read_excel(file_path)
+        return data.to_string(index=False)
     except Exception as e:
         print(f"Error extracting Excel data: {e}")
         return None
@@ -153,54 +146,8 @@ def extract_text_txt(file_path):
         print(f"Error extracting text from TXT file: {e}")
         return None
 
-def is_empty_or_stopwords(text):
-    """Check if text is empty or contains only stop words."""
-    words = text.split()
-    if not words:
-        return True
-    non_stop_words = [word for word in words if word not in string.punctuation]
-    return len(non_stop_words) == 0
-
-def calculate_and_display_similarities(documents):
-    def get_range(percentage):
-        if percentage >= 90:
-            return "90-100%"
-        elif percentage >= 80:
-            return "80-90%"
-        elif percentage >= 70:
-            return "70-80%"
-        elif percentage >= 60:
-            return "60-70%"
-        elif percentage >= 50:
-            return "50-60%"
-        elif percentage >= 40:
-            return "40-50%"
-        elif percentage >= 30:
-            return "30-40%"
-        elif percentage >= 20:
-            return "20-30%"
-        elif percentage >= 10:
-            return "10-20%"
-        else:
-            return "0-10%"
-
-    similarities = []
-    for i in range(len(documents)):
-        for j in range(i + 1, len(documents)):
-            similarity = structural_similarity(documents[i], documents[j])
-            range_label = get_range(similarity)
-            similarities.append([
-                f"Document {i + 1} and Document {j + 1}",
-                similarity,
-                range_label
-            ])
-    return similarities
-
 def preprocess_text(text):
     return text.lower().translate(str.maketrans('', '', string.punctuation))
-
-def segment_text(text):
-    return text.split('\n')
 
 def lcs(X, Y):
     m = len(X)
@@ -241,36 +188,22 @@ def cosine_similarity_percentage(text1, text2):
     similarity_percentage = cosine_sim[0][0] * 100
     return similarity_percentage
 
-def structural_similarity(text1, text2):
-    text1 = preprocess_text(text1)
-    text2 = preprocess_text(text2)
+def calculate_and_display_similarities(documents):
+    similarities = []
+    for i in range(len(documents)):
+        for j in range(i + 1, len(documents)):
+            # Get the max similarity using LCS and Cosine
+            lcs_sim = calculate_similarity(documents[i], documents[j])
+            cosine_sim = cosine_similarity_percentage(documents[i], documents[j])
+            best_similarity = max(lcs_sim, cosine_sim)
 
-    paragraphs1 = segment_text(text1)
-    paragraphs2 = segment_text(text2)
-
-    matched_similarities = []
-    for para1 in paragraphs1:
-        if not para1.strip():
-            continue
-        best_match_similarity = 0
-        for para2 in paragraphs2:
-            if not para2.strip():
-                continue
-            lcs_sim = calculate_similarity(para1, para2)
-            cosine_sim = cosine_similarity_percentage(para1, para2)
-            best_match_similarity = max(best_match_similarity, lcs_sim, cosine_sim)
-        matched_similarities.append(best_match_similarity)
-
-    if not matched_similarities:
-        return 0
-
-    total_similarity_percentage = sum(matched_similarities) / len(matched_similarities)
-    return total_similarity_percentage
+            similarities.append([f"Document {i + 1} and Document {j + 1}", best_similarity])
+    return similarities
 
 def detect_inspirations(text1, text2):
     inspirations = []
-    paragraphs1 = segment_text(text1)
-    paragraphs2 = segment_text(text2)
+    paragraphs1 = text1.split('\n')
+    paragraphs2 = text2.split('\n')
 
     for para2 in paragraphs2:
         best_match_similarity = 0
@@ -284,16 +217,16 @@ def detect_inspirations(text1, text2):
         inspirations.append((para2, best_match_similarity))
     return inspirations
 
-def calculate_total_inspiration(inspirations, total_paragraphs):
+def calculate_total_inspiration(inspirations):
     total_similarity_score = sum(similarity for _, similarity in inspirations)
-    if total_paragraphs == 0:
+    if len(inspirations) == 0:
         return 0
-    total_inspiration_percentage = total_similarity_score / total_paragraphs
+    total_inspiration_percentage = total_similarity_score / len(inspirations)
     return total_inspiration_percentage
 
 def measure_inspiration(text1, text2):
     inspirations = detect_inspirations(text1, text2)
-    total_inspiration_percentage = calculate_total_inspiration(inspirations, len(inspirations))
+    total_inspiration_percentage = calculate_total_inspiration(inspirations)
     return total_inspiration_percentage
 
 if __name__ == '__main__':
