@@ -1,242 +1,148 @@
+import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os
-import logging
-import string
 from docx import Document
-import pdfplumber
-import pandas as pd
+import fitz  # PyMuPDF
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
-logging.basicConfig(level=logging.DEBUG)
 
 UPLOAD_FOLDER = 'uploads'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Ensure upload folder exists
+# Ensure the upload folder exists
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
-
-@app.route('/upload', methods=['POST'])
-def upload_files():
+# Text extraction functions
+def extract_text_from_pdf(file_path):
+    text = ""
     try:
-        if 'files' not in request.files:
-            app.logger.error("No files part in the request")
-            return jsonify({"error": "No files part in the request"}), 400
-        
-        files = request.files.getlist('files')
-        if not files:
-            app.logger.error("No files uploaded")
-            return jsonify({"error": "No files uploaded"}), 400
-        
-        file_urls = []
-        for file in files:
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-            file.save(file_path)
-            file_urls.append(file_path)
-        
-        return jsonify({"file_urls": file_urls}), 200
+        pdf_document = fitz.open(file_path)
+        for page_num in range(pdf_document.page_count):
+            page = pdf_document.load_page(page_num)
+            text += page.get_text()
     except Exception as e:
-        app.logger.error(f"Exception occurred during file upload: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"Error extracting text from PDF: {e}")
+    return text
 
-
-@app.route('/similarities', methods=['POST'])
-def get_similarities():
-    try:
-        data = request.json
-        file_paths = data.get('file_paths', [])
-        
-        if not file_paths or len(file_paths) < 2:
-            app.logger.error("Not enough file paths to compare")
-            return jsonify({"error": "Not enough file paths to compare."}), 400
-        
-        # Extract texts from files
-        documents = []
-        for file_path in file_paths:
-            text = extract_text_from_file(file_path)
-            if text:
-                documents.append(text)
-        
-        if len(documents) < 2:
-            app.logger.error("Not enough extracted texts to compare")
-            return jsonify({"error": "Not enough extracted texts to compare."}), 400
-        
-        similarity_results = calculate_and_display_similarities(documents)
-        return jsonify(similarity_results), 200
-    except Exception as e:
-        app.logger.error(f"Exception occurred: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/inspiration', methods=['POST'])
-def get_inspiration():
-    try:
-        data = request.json
-        text1 = data.get('text1')
-        text2 = data.get('text2')
-        file_paths = data.get('file_paths', [])
-        
-        # Extract texts from files if file paths are provided
-        for file_path in file_paths:
-            extracted_text = extract_text_from_file(file_path)
-            if extracted_text:
-                if not text1:
-                    text1 = extracted_text
-                elif not text2:
-                    text2 = extracted_text
-                else:
-                    # Combine extracted texts if both text1 and text2 are already provided
-                    text2 += "\n" + extracted_text
-        
-        if not text1 or not text2:
-            return jsonify({"error": "Both text1 and text2 are required either directly or via file paths."}), 400
-        
-        inspiration_percentage = measure_inspiration(text1, text2)
-        return jsonify({"inspiration_percentage": inspiration_percentage}), 200
-    except Exception as e:
-        app.logger.error(f"Exception in inspiration API: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-def detect_inspirations(text1, text2):
-    """
-    Detects the inspiration percentage for each paragraph in `text2` based on its similarity to `text1`.
-    """
-    inspirations = []
-    paragraphs1 = text1.split('\n')
-    paragraphs2 = text2.split('\n')
-
-    for para2 in paragraphs2:
-        best_match_similarity = 0
-        for para1 in paragraphs1:
-            lcs_sim = calculate_similarity(para1, para2)
-            cosine_sim = cosine_similarity_percentage(para1, para2)
-            max_similarity = max(lcs_sim, cosine_sim)
-
-            if max_similarity > 0:
-                best_match_similarity = max(best_match_similarity, max_similarity)
-        inspirations.append((para2, best_match_similarity))
-    return inspirations
-
-
-def calculate_total_inspiration(inspirations):
-    """
-    Calculate the overall inspiration percentage from the detected inspirations.
-    """
-    total_similarity_score = sum(similarity for _, similarity in inspirations)
-    if len(inspirations) == 0:
-        return 0
-    total_inspiration_percentage = total_similarity_score / len(inspirations)
-    return total_inspiration_percentage
-
-
-def measure_inspiration(text1, text2):
-    """
-    Measures the overall inspiration of `text2` based on its similarity to `text1`.
-    """
-    inspirations = detect_inspirations(text1, text2)
-    total_inspiration_percentage = calculate_total_inspiration(inspirations)
-    return total_inspiration_percentage
-
-def extract_text_from_file(file_path):
-    file_extension = os.path.splitext(file_path)[1].lower()
-    
-    if file_extension == ".pdf":
-        return extract_text_pdfplumber(file_path)
-    elif file_extension == ".docx":
-        return extract_text_docx(file_path)
-    elif file_extension in [".xls", ".xlsx"]:
-        return extract_text_with_pandas(file_path)
-    elif file_extension == ".txt":
-        return extract_text_txt(file_path)
-    else:
-        print(f"Unsupported file type: {file_extension}")
-        return None
-
-
-def extract_text_pdfplumber(file_path):
-    try:
-        with pdfplumber.open(file_path) as pdf:
-            text = ''.join([page.extract_text() for page in pdf.pages])
-        return text
-    except Exception as e:
-        print(f"Error extracting PDF text: {e}")
-        return None
-
-
-def extract_text_docx(file_path):
+def extract_text_from_docx(file_path):
+    text = ""
     try:
         doc = Document(file_path)
-        return '\n'.join([paragraph.text for paragraph in doc.paragraphs])
+        for paragraph in doc.paragraphs:
+            text += paragraph.text + '\n'
     except Exception as e:
-        print(f"Error extracting DOCX text: {e}")
-        return None
+        print(f"Error extracting text from DOCX: {e}")
+    return text
 
-
-def extract_text_with_pandas(file_path):
-    try:
-        data = pd.read_excel(file_path)
-        return data.to_string(index=False)
-    except Exception as e:
-        print(f"Error extracting Excel data: {e}")
-        return None
-
-
-def extract_text_txt(file_path):
+def extract_text_from_txt(file_path):
+    text = ""
     try:
         with open(file_path, 'r', encoding='utf-8') as file:
-            return file.read()
+            text = file.read()
     except Exception as e:
-        print(f"Error extracting text from TXT file: {e}")
-        return None
+        print(f"Error extracting text from TXT: {e}")
+    return text
 
+def get_text_from_file(file_path):
+    _, ext = os.path.splitext(file_path)
+    ext = ext.lstrip('.').lower()
+    if ext == 'pdf':
+        return extract_text_from_pdf(file_path)
+    elif ext == 'docx':
+        return extract_text_from_docx(file_path)
+    elif ext == 'txt':
+        return extract_text_from_txt(file_path)
+    else:
+        print(f"Unsupported file extension: {ext}")
+        return ""
 
-def preprocess_text(text):
-    return text.lower().translate(str.maketrans('', '', string.punctuation))
+# LCS similarity calculation
+def lcs(X, Y):
+    m, n = len(X), len(Y)
+    L = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if X[i - 1] == Y[j - 1]:
+                L[i][j] = L[i - 1][j - 1] + 1
+            else:
+                L[i][j] = max(L[i - 1][j], L[i][j - 1])
+    return L[m][n]
 
-
-def calculate_similarity(text1, text2):
+def calculate_lcs_similarity(text1, text2):
     words1, words2 = text1.split(), text2.split()
     if not words1 or not words2:
         return 0
-
-    def lcs(X, Y):
-        m, n = len(X), len(Y)
-        dp = [[0] * (n + 1) for _ in range(m + 1)]
-        for i in range(m):
-            for j in range(n):
-                if X[i] == Y[j]:
-                    dp[i + 1][j + 1] = dp[i][j] + 1
-                else:
-                    dp[i + 1][j + 1] = max(dp[i + 1][j], dp[i][j + 1])
-        return dp[m][n]
-
     lcs_length = lcs(words1, words2)
     max_length = max(len(words1), len(words2))
-    return (lcs_length / max_length) * 100 if max_length > 0 else 0
+    return (lcs_length / max_length) * 100
 
-
-def cosine_similarity_percentage(text1, text2):
+# Cosine similarity calculation
+def calculate_cosine_similarity(text1, text2):
     vectorizer = TfidfVectorizer()
     tfidf_matrix = vectorizer.fit_transform([text1, text2])
     cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])
     return cosine_sim[0][0] * 100
 
+# API Endpoints
+@app.route('/upload', methods=['POST'])
+def upload_files():
+    if 'files' not in request.files:
+        return jsonify({"error": "No files part in the request"}), 400
+    files = request.files.getlist('files')
+    if not files:
+        return jsonify({"error": "No files uploaded"}), 400
+    file_paths = []
+    for file in files:
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+        file.save(file_path)
+        file_paths.append(file_path)
+    return jsonify({"file_paths": file_paths}), 200
 
-def calculate_and_display_similarities(documents):
-    similarities = []
-    for i in range(len(documents)):
-        for j in range(i + 1, len(documents)):
-            lcs_sim = calculate_similarity(documents[i], documents[j])
-            cosine_sim = cosine_similarity_percentage(documents[i], documents[j])
-            best_similarity = max(lcs_sim, cosine_sim)
-            similarities.append({"documents": [f"Doc{i+1}", f"Doc{j+1}"], "similarity": best_similarity})
-    return similarities
+@app.route('/inspiration', methods=['POST'])
+def inspiration():
+    data = request.json
+    file_paths = data.get('file_paths', [])
+    if len(file_paths) != 2:
+        return jsonify({"error": "Two file paths are required for inspiration calculation"}), 400
+    text1 = get_text_from_file(file_paths[0])
+    text2 = get_text_from_file(file_paths[1])
+    if not text1 or not text2:
+        return jsonify({"error": "Unable to extract text from one or both files"}), 400
+    lcs_similarity = calculate_lcs_similarity(text1, text2)
+    cosine_similarity = calculate_cosine_similarity(text1, text2)
+    max_similarity = max(lcs_similarity, cosine_similarity)
+    return jsonify({
+        "lcs_similarity": lcs_similarity,
+        "cosine_similarity": cosine_similarity,
+        "max_similarity": max_similarity
+    }), 200
 
+@app.route('/similarities', methods=['POST'])
+def similarities():
+    data = request.json
+    file_paths = data.get('file_paths', [])
+    if len(file_paths) < 2:
+        return jsonify({"error": "At least two file paths are required"}), 400
+    texts = [get_text_from_file(path) for path in file_paths]
+    if any(not text for text in texts):
+        return jsonify({"error": "Unable to extract text from one or more files"}), 400
+    results = []
+    for i in range(len(texts)):
+        for j in range(i + 1, len(texts)):
+            lcs_sim = calculate_lcs_similarity(texts[i], texts[j])
+            cosine_sim = calculate_cosine_similarity(texts[i], texts[j])
+            max_sim = max(lcs_sim, cosine_sim)
+            results.append({
+                "files": [file_paths[i], file_paths[j]],
+                "lcs_similarity": lcs_sim,
+                "cosine_similarity": cosine_sim,
+                "max_similarity": max_sim
+            })
+    return jsonify(results), 200
 
 if __name__ == '__main__':
     app.run(debug=True)

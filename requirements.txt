@@ -7,3 +7,4 @@ pillow==11.1.0
 scikit-learn==1.6.1
 numpy==2.2.1
 gunicorn==21.2.0
+PyMuPDF==1.23.7
